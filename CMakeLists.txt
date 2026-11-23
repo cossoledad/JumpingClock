@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.25)
 set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT "$<$<CONFIG:Debug,RelWithDebInfo>:Embedded>")
-project(JumpingClock LANGUAGES CXX RC)
+project(JumpingClock VERSION 0.1.1 LANGUAGES CXX RC)
 set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 

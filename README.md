@@ -26,4 +26,4 @@ ctest --test-dir build --output-on-failure
 
 ## GitHub Actions
 
-推送或提交 PR 后，工作流在 Windows Server 2022 和 2025 上构建 x64 Release，运行迁移、时区和回环探测测试，并上传 EXE。Windows 10 和 11 的桌面验收需在对应系统上运行，重点检查托盘、DPI、登录自启和睡眠恢复。
+工作流在 Windows Server 2022（Visual Studio 2022）和 2025（Visual Studio 2026）构建并测试 x64 Release。推送 `v*` 标签时，两组测试通过后发布 GitHub Release，附上 2022 构建的 EXE。Windows 10 和 11 的桌面验收需在对应系统上运行，重点检查托盘、DPI、登录自启和睡眠恢复。
