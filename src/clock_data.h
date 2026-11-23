@@ -7,24 +7,30 @@
 #include <vector>
 
 constexpr size_t maxClocks = 16;
-constexpr size_t maxCityLength = 40;
 constexpr int minOpacity = 35;
 
 struct ClockEntry {
     std::wstring city;
     std::wstring zoneId;
+    std::wstring target;
 };
 
 struct Settings {
     std::vector<ClockEntry> clocks{
-        {L"北京", L"China Standard Time"},
-        {L"洛杉矶", L"Pacific Standard Time"},
+        {L"Beijing", L"China Standard Time", {}},
+        {L"Los Angeles", L"Pacific Standard Time", {}},
     };
-    std::wstring target;
     bool showCity = true;
     bool showZone = true;
     int opacity = 90;
 };
+
+struct City {
+    PCWSTR name;
+    PCWSTR zoneId;
+};
+
+extern const std::vector<City> cities;
 
 struct TimeZone {
     std::wstring id;

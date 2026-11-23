@@ -64,10 +64,14 @@ Settings LoadSettings() {
     for (const wchar_t* item = buffer.data(); *item; item += wcslen(item) + 1) {
         values.emplace_back(item);
     }
-    if (values.size() < 7 || values[0] != L"1" || (values.size() - 5) % 2 != 0 ||
-        (values.size() - 5) / 2 > maxClocks) {
+    if (values.empty() || (values[0] != L"1" && values[0] != L"2")) {
         return settings;
     }
+    const bool legacy = values[0] == L"1";
+    const size_t start = legacy ? 5 : 4;
+    const size_t stride = legacy ? 2 : 3;
+    if (values.size() < start + stride || (values.size() - start) % stride != 0 ||
+        (values.size() - start) / stride > maxClocks) return settings;
 
     settings.showCity = values[1] == L"1";
     settings.showZone = values[2] == L"1";
@@ -76,12 +80,14 @@ Settings LoadSettings() {
     if (*end == L'\0' && opacity >= minOpacity && opacity <= 100) {
         settings.opacity = static_cast<int>(opacity);
     }
-    if (values[4] != L"-" && values[4].size() <= 15) {
-        settings.target = values[4];
-    }
     settings.clocks.clear();
-    for (size_t i = 5; i < values.size(); i += 2) {
-        settings.clocks.push_back({values[i].substr(0, maxCityLength), values[i + 1]});
+    for (size_t i = start; i < values.size(); i += stride) {
+        std::wstring city = values[i].substr(0, 40);
+        if (legacy && city == L"北京" && values[i + 1] == L"China Standard Time") city = L"Beijing";
+        if (legacy && city == L"洛杉矶" && values[i + 1] == L"Pacific Standard Time") city = L"Los Angeles";
+        const auto& target = values[legacy ? 4 : i + 2];
+        settings.clocks.push_back({city, values[i + 1],
+                                   target != L"-" && target.size() <= 15 ? target : L""});
     }
     return settings;
 }
@@ -92,14 +98,14 @@ bool SaveSettings(const Settings& settings) {
         buffer += value;
         buffer += L'\0';
     };
-    append(L"1");
+    append(L"2");
     append(settings.showCity ? L"1" : L"0");
     append(settings.showZone ? L"1" : L"0");
     append(std::to_wstring(settings.opacity));
-    append(settings.target.empty() ? L"-" : settings.target);
     for (const auto& clock : settings.clocks) {
         append(clock.city);
         append(clock.zoneId);
+        append(clock.target.empty() ? L"-" : clock.target);
     }
     return WriteValue(settingsKey, L"Settings", REG_MULTI_SZ, buffer.c_str(),
                       static_cast<DWORD>((buffer.size() + 1) * sizeof(wchar_t)));

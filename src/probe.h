@@ -6,6 +6,8 @@
 #include <iphlpapi.h>
 #include <icmpapi.h>
 
+#include "clock_data.h"
+
 #include <array>
 #include <optional>
 #include <string>
@@ -22,20 +24,34 @@ PCWSTR ProbeStateText(ProbeState state);
 class Probe {
 public:
     void Initialize(HWND window);
-    void SetTarget(const std::wstring& target);
+    void SetTargets(const Settings& settings, const Settings* previewBaseline = nullptr);
     void Restart(UINT delay);
     void OnTimer();
     void OnComplete();
     void Shutdown();
 
-    ProbeState State() const { return state_; }
-    std::wstring Details() const;
+    bool HasTargets() const;
+    ProbeState State(PCWSTR target) const;
+    ProbeState OverallState() const;
+    std::wstring Details(PCWSTR target) const;
 
 private:
-    void Schedule(UINT delay);
-    void Send();
-    void ReadReply(DWORD count, DWORD error);
-    void Record(ProbeState result, DWORD error);
+    struct Target {
+        ULONG address{};
+        bool enabled{};
+        ULONGLONG due{};
+        unsigned failures{};
+        ProbeState state = ProbeState::waiting;
+        ProbeState lastResult = ProbeState::waiting;
+        DWORD lastError{};
+        std::optional<SYSTEMTIME> lastTime;
+    };
+
+    const Target* Find(PCWSTR text) const;
+    void ScheduleNext();
+    void Send(Target& target);
+    void ReadReply(Target& target, DWORD count, DWORD error);
+    void Record(Target& target, ProbeState result, DWORD error);
     bool Open();
 
     HWND window_{};
@@ -43,16 +59,9 @@ private:
     HANDLE icmp_ = INVALID_HANDLE_VALUE;
     HANDLE event_{};
     PTP_WAIT wait_{};
-    ULONG address_{};
-    bool enabled_{};
-    bool pending_{};
+    std::vector<Target> targets_;
+    std::optional<ULONG> pending_;
     bool discard_{};
-    ULONGLONG due_{};
-    unsigned failures_{};
-    ProbeState state_ = ProbeState::disabled;
-    ProbeState lastResult_ = ProbeState::disabled;
-    DWORD lastError_{};
-    std::optional<SYSTEMTIME> lastTime_;
     std::array<char, 8> payload_{'J', 'C'};
     std::array<ULONG_PTR, 16> reply_{};
 };

@@ -111,7 +111,7 @@ class ClockView {
 public:
     ~ClockView() { ClearFonts(); }
 
-    SIZE Measure(HWND window, const Settings& settings, LONG maxWidth) {
+    SIZE Measure(HWND window, const Settings& settings, LONG maxWidth, bool showStatus) {
         const UINT dpi = GetDpiForWindow(window);
         if (dpi_ != dpi) {
             ClearFonts();
@@ -122,7 +122,7 @@ public:
                                    DEFAULT_CHARSET, 0, 0, ANTIALIASED_QUALITY, 0, L"Segoe UI");
         }
         pad_ = Scale(7, dpi_);
-        gutter_ = Scale(9, dpi_);
+        gutter_ = showStatus ? Scale(10, dpi_) : 0;
         gap_ = Scale(8, dpi_);
         rowHeight_ = Scale(22, dpi_);
 
@@ -153,7 +153,7 @@ public:
     }
 
     void Draw(HWND window, const Settings& settings, const std::vector<ClockTime>& times,
-              ProbeState state) const {
+              const std::vector<ProbeState>& states) const {
         PAINTSTRUCT paint{};
         HDC dc = BeginPaint(window, &paint);
         RECT client{};
@@ -163,20 +163,22 @@ public:
         SetBkMode(dc, TRANSPARENT);
 
         const auto originalPen = SelectObject(dc, GetStockObject(DC_PEN));
-        const auto originalBrush = SelectObject(dc, GetStockObject(IsStatusFilled(state) ? DC_BRUSH : NULL_BRUSH));
-        SetDCPenColor(dc, StatusColor(state));
-        SetDCBrushColor(dc, StatusColor(state));
+        const auto originalBrush = SelectObject(dc, GetStockObject(DC_BRUSH));
         const int diameter = Scale(7, dpi_);
-        const int top = pad_ + (rowHeight_ - diameter) / 2;
-        Ellipse(dc, pad_, top, pad_ + diameter, top + diameter);
-        SelectObject(dc, originalBrush);
-        SelectObject(dc, originalPen);
 
         const HGDIOBJ originalFont = SelectObject(dc, Font(labelFont_));
         const UINT flags = DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS;
         for (size_t i = 0; i < settings.clocks.size() && i < times.size(); ++i) {
             const LONG y = pad_ + static_cast<LONG>(i) * rowHeight_;
             RECT cell{pad_ + gutter_, y, 0, y + rowHeight_};
+            if (gutter_ && i < states.size() && states[i] != ProbeState::disabled) {
+                const auto state = states[i];
+                SelectObject(dc, GetStockObject(IsStatusFilled(state) ? DC_BRUSH : NULL_BRUSH));
+                SetDCPenColor(dc, StatusColor(state));
+                SetDCBrushColor(dc, StatusColor(state));
+                const LONG top = y + (rowHeight_ - diameter) / 2;
+                Ellipse(dc, pad_, top, pad_ + diameter, top + diameter);
+            }
             SelectObject(dc, Font(labelFont_));
             SetTextColor(dc, mutedText);
             if (cityWidth_) {
@@ -194,6 +196,8 @@ public:
             cell.right = client.right - pad_;
             DrawTextW(dc, times[i].time.c_str(), -1, &cell, flags | DT_RIGHT);
         }
+        SelectObject(dc, originalBrush);
+        SelectObject(dc, originalPen);
         SelectObject(dc, originalFont);
         EndPaint(window, &paint);
     }
@@ -231,7 +235,8 @@ public:
         if (!window_) return false;
 
         probe_.Initialize(window_);
-        probe_.SetTarget(settings_.target);
+        probe_.SetTargets(settings_);
+        ProbeUpdated();
         UpdateOpacity();
         PositionClock(!position.has_value());
         AddTray();
@@ -270,7 +275,7 @@ private:
         if (auto* app = FromWindow(window, message, lParam); app && app->popup_ == window) {
             switch (message) {
             case WM_PAINT:
-                app->popupView_.Draw(window, app->settings_, app->times_, app->probe_.State());
+                app->popupView_.Draw(window, app->settings_, app->times_, app->rowStates_);
                 return 0;
             case WM_ACTIVATE:
                 if (LOWORD(wParam) == WA_INACTIVE && IsWindowVisible(window)) app->HidePopup();
@@ -293,7 +298,7 @@ private:
         if (suggested) current = *suggested;
         else GetWindowRect(window_, &current);
         const RECT work = WorkArea({current.left, current.top});
-        const SIZE size = clockView_.Measure(window_, settings_, work.right - work.left);
+        const SIZE size = clockView_.Measure(window_, settings_, work.right - work.left, probe_.HasTargets());
         const int inset = Scale(12, GetDpiForWindow(window_));
         const POINT desired = initial ? POINT{work.right - size.cx - inset, work.top + inset}
                                       : POINT{current.left, current.top};
@@ -307,7 +312,7 @@ private:
         const RECT work = WorkArea(anchor);
         SetWindowPos(popup_, nullptr, anchor.x, anchor.y, 0, 0,
                      SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
-        const SIZE size = popupView_.Measure(popup_, settings_, work.right - work.left);
+        const SIZE size = popupView_.Measure(popup_, settings_, work.right - work.left, probe_.HasTargets());
         const int gap = Scale(5, GetDpiForWindow(popup_));
         const LONG above = trayAnchor_.top - size.cy - gap;
         const LONG y = above >= work.top ? above : trayAnchor_.bottom + gap;
@@ -354,10 +359,11 @@ private:
         auto data = TrayData();
         data.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP | NIF_SHOWTIP;
         data.uCallbackMessage = trayMessage;
-        data.hIcon = MakeTrayIcon(probe_.State());
+        data.hIcon = MakeTrayIcon(trayState_);
         const bool customIcon = data.hIcon != nullptr;
         if (!data.hIcon) data.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
-        const std::wstring text = std::wstring(L"JumpingClock · ") + ProbeStateText(probe_.State());
+        std::wstring text = L"JumpingClock";
+        if (trayState_ != ProbeState::disabled) text += std::wstring(L" · ") + ProbeStateText(trayState_);
         wcsncpy_s(data.szTip, text.c_str(), _TRUNCATE);
         const bool success = Shell_NotifyIconW(operation, &data) != FALSE;
         if (customIcon) DestroyIcon(data.hIcon);
@@ -374,10 +380,19 @@ private:
         if (!trayAdded_) SetCoalescableTimer(window_, trayTimer, 2'000, nullptr, 500);
     }
 
-    void ProbeUpdated(ProbeState previous) {
+    void ProbeUpdated() {
         if (settingsDialog_) SendMessageW(settingsDialog_, updateProbeDetailsMessage, 0, 0);
-        if (probe_.State() == previous) return;
-        UpdateClockViews();
+        bool changed = rowStates_.size() != settings_.clocks.size();
+        rowStates_.resize(settings_.clocks.size());
+        for (size_t i = 0; i < settings_.clocks.size(); ++i) {
+            const auto state = probe_.State(settings_.clocks[i].target.c_str());
+            changed = changed || rowStates_[i] != state;
+            rowStates_[i] = state;
+        }
+        if (changed) UpdateClockViews();
+        const auto state = probe_.OverallState();
+        if (state == trayState_) return;
+        trayState_ = state;
         if (trayAdded_ && !SetTray(NIM_MODIFY)) AddTray();
     }
 
@@ -422,7 +437,7 @@ private:
 
     void SetFloatingVisible(bool visible) {
         if (!visible && !trayAdded_) {
-            MessageBoxW(window_, L"系统托盘暂不可用，无法隐藏时钟。", L"JumpingClock", MB_OK | MB_ICONINFORMATION);
+            MessageBoxW(window_, L"托盘不可用。", L"JumpingClock", MB_OK | MB_ICONINFORMATION);
             return;
         }
         if (visible) PositionClock();
@@ -434,17 +449,43 @@ private:
     void OpenSettings() {
         if (settingsDialog_) return;
         if (popup_ && IsWindowVisible(popup_)) HidePopup();
-        const std::wstring oldTarget = settings_.target;
-        if (EditSettings(instance_, window_, settingsDialog_, settings_, zones_, probe_)) {
-            if (settings_.target != oldTarget) {
-                const auto previous = probe_.State();
-                probe_.SetTarget(settings_.target);
-                ProbeUpdated(previous);
-            }
-            UpdateOpacity();
-            PositionClock();
+        const bool wasVisible = IsWindowVisible(window_) != FALSE;
+        const Settings baseline = settings_;
+        GetWindowRect(window_, &previewPosition_);
+        previewBaseline_ = &baseline;
+        if (!wasVisible) {
+            ShowWindow(window_, SW_SHOWNOACTIVATE);
             RefreshTime();
         }
+        const bool saved = EditSettings(instance_, window_, settingsDialog_, baseline, zones_, probe_);
+        if (!saved) ApplyPreview(baseline, &previewPosition_);
+        previewBaseline_ = nullptr;
+        probe_.SetTargets(settings_);
+        ProbeUpdated();
+        if (!wasVisible) {
+            ShowWindow(window_, SW_HIDE);
+            RefreshTime();
+        }
+    }
+
+    void ApplyPreview(const Settings& draft, const RECT* restorePosition = nullptr) {
+        const auto fieldsMatch = [&](auto field) {
+            return std::ranges::equal(settings_.clocks, draft.clocks, {}, field, field);
+        };
+        const bool addressesChanged = !fieldsMatch(&ClockEntry::target);
+        const bool labelsChanged = settings_.showCity != draft.showCity || settings_.showZone != draft.showZone ||
+                                   !fieldsMatch(&ClockEntry::city);
+        const bool zonesChanged = !fieldsMatch(&ClockEntry::zoneId);
+        const bool opacityChanged = settings_.opacity != draft.opacity;
+        const bool hadTargets = probe_.HasTargets();
+        settings_ = draft;
+        if (addressesChanged) probe_.SetTargets(settings_, previewBaseline_);
+        if (opacityChanged) UpdateOpacity();
+        if (labelsChanged || hadTargets != probe_.HasTargets() || restorePosition) {
+            PositionClock(false, restorePosition ? restorePosition : &previewPosition_);
+        }
+        if (labelsChanged || zonesChanged || hadTargets != probe_.HasTargets()) RefreshTime();
+        if (addressesChanged) ProbeUpdated();
     }
 
     void Menu(POINT point) {
@@ -452,10 +493,10 @@ private:
         if (popup_ && IsWindowVisible(popup_)) HidePopup();
         HMENU menu = CreatePopupMenu();
         if (!menu) return;
-        AppendMenuW(menu, MF_STRING, showCommand, IsWindowVisible(window_) ? L"隐藏悬浮时钟" : L"显示悬浮时钟");
+        AppendMenuW(menu, MF_STRING, showCommand, IsWindowVisible(window_) ? L"隐藏时钟" : L"显示时钟");
         AppendMenuW(menu, MF_STRING, settingsCommand, L"设置…");
-        if (probe_.State() != ProbeState::disabled) {
-            AppendMenuW(menu, MF_STRING, recheckCommand, L"立即探测");
+        if (probe_.HasTargets()) {
+            AppendMenuW(menu, MF_STRING, recheckCommand, L"探测");
         }
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(menu, MF_STRING, exitCommand, L"退出");
@@ -480,9 +521,8 @@ private:
     }
 
     void RestartProbe(UINT delay) {
-        const auto previous = probe_.State();
         probe_.Restart(delay);
-        ProbeUpdated(previous);
+        ProbeUpdated();
     }
 
     LRESULT OnMessage(UINT message, WPARAM wParam, LPARAM lParam) {
@@ -492,7 +532,7 @@ private:
         }
         switch (message) {
         case WM_PAINT:
-            clockView_.Draw(window_, settings_, times_, probe_.State());
+            clockView_.Draw(window_, settings_, times_, rowStates_);
             return 0;
         case WM_ERASEBKGND:
             return 1;
@@ -543,21 +583,21 @@ private:
             if (wParam == minuteTimer) {
                 RefreshTime();
             } else if (wParam == probeTimer) {
-                const auto previous = probe_.State();
                 probe_.OnTimer();
-                ProbeUpdated(previous);
+                ProbeUpdated();
             } else if (wParam == trayTimer) {
                 AddTray();
             }
             return 0;
-        case probeCompleteMessage: {
-            const auto previous = probe_.State();
+        case probeCompleteMessage:
             probe_.OnComplete();
-            ProbeUpdated(previous);
+            ProbeUpdated();
             return 0;
-        }
         case networkChangedMessage:
-            if (probe_.State() != ProbeState::disabled) RestartProbe(750);
+            if (probe_.HasTargets()) RestartProbe(750);
+            return 0;
+        case previewSettingsMessage:
+            if (previewBaseline_) ApplyPreview(*reinterpret_cast<const Settings*>(lParam));
             return 0;
         case trayMessage: {
             const UINT event = LOWORD(lParam);
@@ -570,7 +610,7 @@ private:
             return 0;
         }
         case revealMessage:
-            SetFloatingVisible(true);
+            if (!settingsDialog_) SetFloatingVisible(true);
             return 0;
         case WM_CLOSE:
             if (!settingsDialog_) DestroyWindow(window_);
@@ -602,12 +642,16 @@ private:
     bool positioningPopup_{};
     bool menuOpen_{};
     RECT trayAnchor_{};
+    RECT previewPosition_{};
     ClockView clockView_;
     ClockView popupView_;
     Settings settings_;
+    const Settings* previewBaseline_{};
     Probe probe_;
+    ProbeState trayState_ = ProbeState::disabled;
     std::vector<TimeZone> zones_;
     std::vector<ClockTime> times_;
+    std::vector<ProbeState> rowStates_;
 };
 
 } // namespace
@@ -623,7 +667,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
 
     App app(instance);
     if (!app.Start()) {
-        MessageBoxW(nullptr, L"无法启动时钟窗口。", L"JumpingClock", MB_OK | MB_ICONERROR);
+        MessageBoxW(nullptr, L"启动失败。", L"JumpingClock", MB_OK | MB_ICONERROR);
         CloseHandle(singleInstance);
         return 1;
     }

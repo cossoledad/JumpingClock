@@ -1,8 +1,6 @@
 #define IDD_SETTINGS  100
-#define IDD_CLOCK     101
 #define IDC_CLOCKS    1000
 #define IDC_ADD       1001
-#define IDC_EDIT      1002
 #define IDC_REMOVE    1003
 #define IDC_SHOWCITY  1004
 #define IDC_SHOWZONE  1005
@@ -11,4 +9,4 @@
 #define IDC_TARGET    1008
 #define IDC_STATUS    1009
 #define IDC_CITY      1010
-#define IDC_ZONE      1011
+#define IDC_OPACITY_VALUE 1011
